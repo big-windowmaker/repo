@@ -1,0 +1,198 @@
+# Publica o repositório pacman assinado [big-wm] no release "x86_64".
+#
+# 1. Baixa o que já está publicado no release (a fonte da verdade: um
+#    artefato de CI expirado não tira o pacote do repositório).
+# 2. Baixa os artefatos de CI mais novos (runs de push no main, com sucesso)
+#    dos repositórios da organização, os mesmos que a ISO usa.
+# 3. Num contêiner Manjaro sem rede, escolhe a maior versão de cada pacote,
+#    confere as assinaturas publicadas, assina o que é novo e monta o banco
+#    assinado (scripts/build-repo.sh).
+# 4. Se o manifesto mudou: sobe os pacotes, depois o banco, e apaga os
+#    anexos que saíram.
+# 5. Verifica num contêiner Manjaro limpo, pela internet, como um usuário:
+#    confia na chave, sincroniza, instala e recusa um pacote adulterado.
+name: publicar
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publicar
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: x86_64
+  # manjarolinux/base:latest (o mesmo digest de big-windowmaker/packages)
+  MANJARO_IMAGE: docker.io/manjarolinux/base@sha256:bbf1f1d746f28e138eea610e140d2f28cbb5b7c5da2fbff034b883527aa604e9
+  # Chave primária 2F36 D64F 633B BA80 052F  4893 4AF5 FC29 61C2 E4AF
+  # (offline); a CI só tem esta subchave de assinatura.
+  SIGNING_SUBKEY: 2C5BE454099563AB4C783205173E2C09FC1833B0
+  # Uma fonte por linha: <dono/repo> <workflow> <artefato> (as mesmas da ISO
+  # em big-windowmaker/build-iso, mais o big-wm-keyring).
+  PACKAGE_SOURCES: |
+    big-windowmaker/big-wm    ci.yml     big-wm-packages
+    big-windowmaker/tabbed-dock ci.yml   tabbed-dock-packages
+    big-windowmaker/big-wm-display-resolution ci.yml display-resolution-packages
+    big-windowmaker/big-keyboard ci.yml  big-keyboard-packages
+    big-windowmaker/packages  build.yml  packages-big-wm-keyring
+    big-windowmaker/packages  build.yml  packages-windowmaker
+    big-windowmaker/packages  build.yml  packages-wlmaker
+    big-windowmaker/packages  build.yml  packages-big-dockapps
+    big-windowmaker/packages  build.yml  packages-biglinux-livecd
+    big-windowmaker/packages  build.yml  packages-gtk-nocsd
+    big-windowmaker/packages  build.yml  packages-qtstep-kvantum
+    big-windowmaker/packages  build.yml  packages-onestepback-gtk-theme
+    big-windowmaker/packages  build.yml  packages-retrothemes-firefox
+    big-windowmaker/packages  build.yml  packages-wdm
+    big-windowmaker/packages  build.yml  packages-wmake-zones
+    big-windowmaker/packages  build.yml  packages-wmpulsemixer
+    big-windowmaker/packages  build.yml  packages-thunar-git
+    big-windowmaker/packages  build.yml  packages-libxfce4ui
+  EXPECTED_PACKAGES: >-
+    big-wm-keyring
+    big-wm-session big-wm-wayland big-wm-themes big-wm-welcome big-wm-zoom windowmaker wlmaker
+    big-wm-tabbed-dock big-wm-display-resolution big-wm-lockscreen big-wm-name
+    wdm wmake-zones wmpulsemixer big-keyboard thunar-git
+
+jobs:
+  publicar:
+    name: Montar, assinar e publicar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pacotes já publicados
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/publicados"
+          if gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" -D "$RUNNER_TEMP/publicados" \
+              -p '*.pkg.tar.zst' -p '*.pkg.tar.zst.sig' -p 'big-wm.manifest'
+          fi
+          ls "$RUNNER_TEMP/publicados" | wc -l
+
+      - name: Artefatos de CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALLOW_MISSING: "1"
+        run: bash scripts/fetch-package-artifacts.sh "$RUNNER_TEMP/novos"
+
+      - name: Montar e assinar (contêiner sem rede)
+        env:
+          SIGNING_KEY: ${{ secrets.REPO_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/saida"
+          docker run --rm --network none \
+            -e SIGNING_KEY -e SIGNING_SUBKEY -e EXPECTED_PACKAGES -e PUBLIC_KEY=/repo/keys/big-wm.asc \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$RUNNER_TEMP/publicados:/in/publicados:ro" \
+            -v "$RUNNER_TEMP/novos:/in/novos:ro" \
+            -v "$RUNNER_TEMP/saida:/out" \
+            "$MANJARO_IMAGE" \
+            bash /repo/scripts/build-repo.sh /in/publicados /in/novos /out
+
+      - id: diff
+        name: O manifesto mudou?
+        run: |
+          set -euo pipefail
+          # nome, versão, arquivo e sha256 (a coluna de origem muda sozinha)
+          antes="$RUNNER_TEMP/publicados/big-wm.manifest" depois="$RUNNER_TEMP/saida/big-wm.manifest"
+          if [ -f "$antes" ] && diff -q <(grep -v '^#' "$antes" | cut -d' ' -f1-4) \
+                                         <(grep -v '^#' "$depois" | cut -d' ' -f1-4) >/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Nada mudou." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### [big-wm]"
+              echo '```'
+              grep -v '^#' "$RUNNER_TEMP/saida/big-wm.manifest" | cut -d' ' -f1,2,5
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publicar no release
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/saida"
+          if ! gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "Repositório [big-wm] x86_64" \
+              --notes "Anexos do repositório pacman [big-wm]. Como usar: README do repositório."
+          fi
+          mapfile -t old < <(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          # Pacotes e assinaturas novos antes do banco: quem sincroniza no
+          # meio encontra sempre os arquivos que o banco cita.
+          new_pkgs=()
+          for f in "$out"/*.pkg.tar.zst "$out"/*.pkg.tar.zst.sig; do
+            name=${f##*/}
+            printf '%s\n' "${old[@]}" | grep -qxF "$name" || new_pkgs+=("$f")
+          done
+          if ((${#new_pkgs[@]})); then
+            gh release upload "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --clobber "${new_pkgs[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --clobber \
+            "$out"/big-wm.db "$out"/big-wm.db.sig "$out"/big-wm.files "$out"/big-wm.files.sig \
+            "$out"/big-wm.db.tar.gz "$out"/big-wm.db.tar.gz.sig \
+            "$out"/big-wm.files.tar.gz "$out"/big-wm.files.tar.gz.sig "$out"/big-wm.manifest
+          for name in "${old[@]}"; do
+            [ -e "$out/$name" ] || gh release delete-asset "$RELEASE_TAG" "$name" -R "$GITHUB_REPOSITORY" --yes
+          done
+
+  verificar:
+    name: Verificar como um usuário (Manjaro limpo)
+    needs: publicar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: docker.io/manjarolinux/base@sha256:bbf1f1d746f28e138eea610e140d2f28cbb5b7c5da2fbff034b883527aa604e9
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Confiar na chave, sincronizar e instalar
+        run: |
+          set -euo pipefail
+          pacman-key --init >/dev/null
+          pacman-key --add keys/big-wm.asc
+          pacman-key --lsign-key 2F36D64F633BBA80052F48934AF5FC2961C2E4AF
+          # [big-wm] antes dos repositórios da distribuição, como na edição
+          sed -i "0,/^\[core\]/s|^\[core\]|[big-wm]\nSigLevel = Required\nServer = https://github.com/${GITHUB_REPOSITORY}/releases/download/\$arch\n\n[core]|" /etc/pacman.conf
+          grep -A2 '^\[big-wm\]' /etc/pacman.conf
+          pacman -Sy --noconfirm
+          pacman -S --noconfirm big-wm-keyring big-wm-name
+          # o big-wm-keyring populou a chave (confiança dada pelo pacote)
+          pacman-key --list-keys 2F36D64F633BBA80052F48934AF5FC2961C2E4AF >/dev/null
+          pacman -Q big-wm-keyring big-wm-name
+
+      - name: Pacote adulterado é recusado
+        run: |
+          set -euo pipefail
+          f=$(ls /var/cache/pacman/pkg/big-wm-name-*.pkg.tar.zst)
+          printf 'X' | dd of="$f" bs=1 seek=500 conv=notrunc 2>/dev/null
+          if pacman -S --noconfirm big-wm-name; then
+            echo "::error::um pacote adulterado foi aceito"
+            exit 1
+          fi
+          echo "recusado, como deve ser"
