@@ -189,9 +189,14 @@ jobs:
       - name: Pacote adulterado é recusado
         run: |
           set -euo pipefail
-          f=$(ls /var/cache/pacman/pkg/big-wm-name-*.pkg.tar.zst)
+          # cache próprio: o da imagem não guarda os pacotes instalados
+          mkdir -p /tmp/cache
+          pacman -Sw --noconfirm --cachedir /tmp/cache big-wm-name
+          f=$(ls /tmp/cache/big-wm-name-*.pkg.tar.zst)
+          test -s "$f.sig"
           printf 'X' | dd of="$f" bs=1 seek=500 conv=notrunc 2>/dev/null
-          if pacman -S --noconfirm big-wm-name; then
+          # -U confere a assinatura que está ao lado do arquivo
+          if pacman -U --noconfirm "$f"; then
             echo "::error::um pacote adulterado foi aceito"
             exit 1
           fi
