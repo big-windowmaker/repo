@@ -66,6 +66,9 @@ jobs:
     name: Montar, assinar e publicar
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # Só o main assina: o ambiente repo-assinatura aceita apenas esse branch.
+    # O segredo REPO_SIGNING_KEY deve morar nele (docs: README, "A chave").
+    environment: repo-assinatura
     permissions:
       contents: write
     outputs:
