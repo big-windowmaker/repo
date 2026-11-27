@@ -68,7 +68,7 @@ WindowMaker num BigLinux/BigCommunity.
 | | Impressão digital | Validade | Onde fica |
 | --- | --- | --- | --- |
 | Primária (só certifica) | `2F36 D64F 633B BA80 052F  4893 4AF5 FC29 61C2 E4AF` | 2031-11-25 | offline, com o mantenedor |
-| Subchave de assinatura | `2C5B E454 0995 63AB 4C78  3205 173E 2C09 FC18 33B0` | 2028-11-25 | segredo `REPO_SIGNING_KEY` deste repositório |
+| Subchave de assinatura | `2C5B E454 0995 63AB 4C78  3205 173E 2C09 FC18 33B0` | 2028-11-25 | segredo `REPO_SIGNING_KEY`; o job que assina roda no ambiente `repo-assinatura`, que só aceita o `main` |
 
 Se a subchave vazar ou expirar, ela é revogada ou trocada com a chave
 primária, e o `big-wm-keyring` é atualizado. Quem já confia na chave primária
