@@ -63,6 +63,30 @@ WindowMaker num BigLinux/BigCommunity.
   limpo: confia na chave, sincroniza, instala e confere que um pacote
   adulterado é recusado.
 
+## Voltar atrás (um pacote com problema)
+
+O repositório sempre publica a **maior** versão de cada pacote. Por isso:
+
+1. **O caso comum:** reverta a mudança no repositório de origem e faça o
+   merge. A versão nova sai maior que a com problema (no big-wm, o `rN` do
+   `git describe` sobe; no `packages`, aumente o `pkgrel`), o `publicar`
+   a publica e o `sudo pacman -Syu` dos usuários a instala. Nada a fazer
+   aqui.
+2. **Só se a versão errada for maior do que deveria** (uma época ou um
+   `pkgver` digitados errado), apague o pacote e a assinatura dele do release
+   e publique de novo. O `publicar` só considera o que está no release e os
+   artefatos novos, e volta a escolher a maior versão que sobrou:
+
+   ```sh
+   gh release delete-asset x86_64 NOME-VERSÃO-ARQ.pkg.tar.zst -R big-windowmaker/repo --yes
+   gh release delete-asset x86_64 NOME-VERSÃO-ARQ.pkg.tar.zst.sig -R big-windowmaker/repo --yes
+   gh workflow run publicar -R big-windowmaker/repo
+   ```
+
+   Antes, confira que o artefato de CI mais novo daquele pacote não é a
+   mesma versão errada (senão ela volta). Quem já instalou a versão errada
+   volta com `sudo pacman -Syuu` (o segundo `u` aceita versão menor).
+
 ## A chave
 
 | | Impressão digital | Validade | Onde fica |
